@@ -3,6 +3,7 @@
 /build
 /captures
 /.codex-change-log/
+/reference/
 /.idea/
 /.kotlin/
 /.vscode/
