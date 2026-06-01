@@ -1,4 +1,4 @@
-# FS42 Remotes
+# FS42 Android Remote Maker
 
 Native Android remote tooling and host-side helpers for FieldStation42.
 
