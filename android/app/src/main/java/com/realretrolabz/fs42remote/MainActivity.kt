@@ -9,6 +9,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -207,6 +208,28 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
         redoStack = redoStack.dropLast(1)
         restoreEditorSnapshot(next)
         displayText = "REDO"
+    }
+
+    BackHandler(
+        enabled = settingsOpen ||
+            imageDialogOpen ||
+            installedRemotesOpen ||
+            elementPickerOpen ||
+            shapePickerButtonLabel != null ||
+            polygonDraftButtonLabel != null,
+    ) {
+        when {
+            imageDialogOpen -> imageDialogOpen = false
+            installedRemotesOpen -> installedRemotesOpen = false
+            elementPickerOpen -> elementPickerOpen = false
+            shapePickerButtonLabel != null -> shapePickerButtonLabel = null
+            polygonDraftButtonLabel != null -> {
+                polygonDraftButtonLabel = null
+                polygonDraftPoints = emptyList()
+                displayText = "EDIT MODE"
+            }
+            settingsOpen -> settingsOpen = false
+        }
     }
 
     LaunchedEffect(settingsOpen) {
