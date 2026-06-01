@@ -17,10 +17,12 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -35,6 +37,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -49,6 +52,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,15 +61,23 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
@@ -112,16 +124,22 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun Fs42RemoteApp(modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val view = LocalView.current
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
     var host by rememberSaveable { mutableStateOf("10.0.0.99") }
     var port by rememberSaveable { mutableStateOf("4242") }
+    var guideBridgePort by rememberSaveable { mutableStateOf("4243") }
     var testResult by rememberSaveable { mutableStateOf<String?>(null) }
     var displayText by rememberSaveable { mutableStateOf("READY") }
+    var displayMode by rememberSaveable { mutableStateOf(DisplayMode.Status) }
     var editMode by rememberSaveable { mutableStateOf(false) }
     var clickEffectEnabled by rememberSaveable { mutableStateOf(true) }
     var selectedZoneLabel by rememberSaveable { mutableStateOf<String?>(null) }
     var displayBoxSelected by rememberSaveable { mutableStateOf(false) }
     var elementPickerOpen by rememberSaveable { mutableStateOf(false) }
+    var shapePickerButtonLabel by rememberSaveable { mutableStateOf<String?>(null) }
+    var polygonDraftButtonLabel by rememberSaveable { mutableStateOf<String?>(null) }
+    var polygonDraftPoints by remember { mutableStateOf(emptyList<ZonePoint>()) }
     var imageDialogOpen by rememberSaveable { mutableStateOf(false) }
     var installedRemotesOpen by rememberSaveable { mutableStateOf(false) }
     var skinName by rememberSaveable { mutableStateOf("") }
@@ -132,6 +150,8 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
     var zones by remember { mutableStateOf(DefaultRemoteZones) }
     var displayRect by remember { mutableStateOf(DefaultRemoteDisplayRect) }
     var displayBoxVisible by remember { mutableStateOf(true) }
+    var undoStack by remember { mutableStateOf(emptyList<EditorSnapshot>()) }
+    var redoStack by remember { mutableStateOf(emptyList<EditorSnapshot>()) }
     var installedRemotes by remember { mutableStateOf(listInstalledRemotes(context)) }
     var serverNickname by rememberSaveable { mutableStateOf("FS42") }
     var currentServerProfileId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -142,6 +162,65 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
     var pendingTuneJob by remember { mutableStateOf<Job?>(null) }
     val client = remember { Fs42ApiClient() }
     val scope = rememberCoroutineScope()
+
+    fun currentEditorSnapshot(): EditorSnapshot = EditorSnapshot(
+        contentMode = contentMode,
+        backgroundFilePath = backgroundFilePath,
+        backgroundAspectRatio = backgroundAspectRatio,
+        zones = zones,
+        displayRect = displayRect,
+        displayBoxVisible = displayBoxVisible,
+    )
+
+    fun restoreEditorSnapshot(snapshot: EditorSnapshot) {
+        contentMode = snapshot.contentMode
+        backgroundFilePath = snapshot.backgroundFilePath
+        backgroundAspectRatio = snapshot.backgroundAspectRatio
+        zones = snapshot.zones
+        displayRect = snapshot.displayRect
+        displayBoxVisible = snapshot.displayBoxVisible
+        selectedZoneLabel = null
+        displayBoxSelected = false
+    }
+
+    fun rememberEditState() {
+        undoStack = (undoStack + currentEditorSnapshot()).takeLast(MaxEditorHistory)
+        redoStack = emptyList()
+    }
+
+    fun clearEditHistory() {
+        undoStack = emptyList()
+        redoStack = emptyList()
+    }
+
+    fun undoEdit() {
+        val previous = undoStack.lastOrNull() ?: return
+        redoStack = (redoStack + currentEditorSnapshot()).takeLast(MaxEditorHistory)
+        undoStack = undoStack.dropLast(1)
+        restoreEditorSnapshot(previous)
+        displayText = "UNDO"
+    }
+
+    fun redoEdit() {
+        val next = redoStack.lastOrNull() ?: return
+        undoStack = (undoStack + currentEditorSnapshot()).takeLast(MaxEditorHistory)
+        redoStack = redoStack.dropLast(1)
+        restoreEditorSnapshot(next)
+        displayText = "REDO"
+    }
+
+    LaunchedEffect(settingsOpen) {
+        val window = (context as? ComponentActivity)?.window ?: return@LaunchedEffect
+        val controller = WindowInsetsControllerCompat(window, view)
+        if (settingsOpen) {
+            WindowCompat.setDecorFitsSystemWindows(window, true)
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        } else {
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) {
             return@rememberLauncherForActivityResult
@@ -150,6 +229,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
             displayText = "IMAGE"
             copyImageFromUri(context, uri).fold(
                 onSuccess = { imageFile ->
+                    rememberEditState()
                     backgroundFilePath = imageFile.absolutePath
                     backgroundAspectRatio = imageFile.imageAspectRatio() ?: backgroundAspectRatio
                     displayText = "IMAGE SET"
@@ -183,6 +263,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                             displayBoxVisible = loaded.displayBoxVisible
                             selectedZoneLabel = null
                             displayBoxSelected = false
+                            clearEditHistory()
                             displayText = "LOADED"
                             testResult = "Imported skin:\n${loaded.name}"
                         },
@@ -220,8 +301,12 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
         val parsedPort = parsedPort()
         if (trimmedHost.isBlank() || parsedPort == null) {
             displayText = "SET SERVER"
+            displayMode = DisplayMode.Error
             settingsOpen = true
             return
+        }
+        if (command != RemoteCommand.GUIDE) {
+            displayMode = DisplayMode.Status
         }
 
         when (command) {
@@ -258,8 +343,54 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                     }
 
                     RemoteCommand.GUIDE -> {
-                        displayText = "GUIDE"
-                        showResult("GUIDE", client.post(trimmedHost, parsedPort, "/player/channels/guide"))
+                        if (displayMode == DisplayMode.GuideScroll) {
+                            displayMode = DisplayMode.NowPlaying
+                            displayText = client.getPlayerStatus(trimmedHost, parsedPort).fold(
+                                onSuccess = { body -> body.toNowPlayingDisplayText() },
+                                onFailure = { error ->
+                                    displayMode = DisplayMode.Error
+                                    "ERR ${error.message ?: error::class.simpleName}"
+                                },
+                            )
+                        } else if (displayMode == DisplayMode.NowPlaying) {
+                            displayMode = DisplayMode.Loading
+                            displayText = "SYSTEM..."
+                            val guidePort = guideBridgePort.toIntOrNull()
+                            if (guidePort == null) {
+                                displayMode = DisplayMode.Error
+                                displayText = "SET GUIDE PORT"
+                            } else {
+                                client.get(trimmedHost, guidePort, "/system/status").fold(
+                                    onSuccess = { body ->
+                                        displayMode = DisplayMode.SystemStatus
+                                        displayText = body.extractVfdText() ?: "SYSTEM DATA\nUNAVAILABLE"
+                                    },
+                                    onFailure = { error ->
+                                        displayMode = DisplayMode.Error
+                                        displayText = "SYSTEM ERR\n${error.message ?: error::class.simpleName}"
+                                    },
+                                )
+                            }
+                        } else {
+                            displayMode = DisplayMode.Loading
+                            displayText = "GUIDE..."
+                            val guidePort = guideBridgePort.toIntOrNull()
+                            if (guidePort == null) {
+                                displayMode = DisplayMode.Error
+                                displayText = "SET GUIDE PORT"
+                            } else {
+                                client.get(trimmedHost, guidePort, "/guide/view").fold(
+                                    onSuccess = { body ->
+                                        displayMode = DisplayMode.GuideScroll
+                                        displayText = body.extractVfdText() ?: "NO GUIDE DATA"
+                                    },
+                                    onFailure = { error ->
+                                        displayMode = DisplayMode.Error
+                                        displayText = "GUIDE ERR\n${error.message ?: error::class.simpleName}"
+                                    },
+                                )
+                            }
+                        }
                     }
 
                     RemoteCommand.CHANNEL_UP -> {
@@ -362,6 +493,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
         modifier = modifier,
         onOpenSettings = { settingsOpen = true },
         displayText = displayText,
+        displayMode = displayMode,
         editMode = editMode,
         clickEffectEnabled = clickEffectEnabled,
         backgroundFilePath = backgroundFilePath,
@@ -370,13 +502,18 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
         zones = zones,
         displayRect = displayRect,
         displayBoxVisible = displayBoxVisible,
+        polygonDraftLabel = polygonDraftButtonLabel,
+        polygonDraftPoints = polygonDraftPoints,
         selectedZoneLabel = selectedZoneLabel,
         displayBoxSelected = displayBoxSelected,
+        canUndo = undoStack.isNotEmpty(),
+        canRedo = redoStack.isNotEmpty(),
         onZoneSelected = { zone ->
             selectedZoneLabel = zone.label
             displayBoxSelected = false
             displayText = "EDIT ${zone.label}"
         },
+        onEditGestureStarted = ::rememberEditState,
         onZoneMoved = { changedZone, deltaX, deltaY ->
             zones = zones.map { zone ->
                 if (zone.label == changedZone.label) zone.moveBy(deltaX, deltaY) else zone
@@ -385,6 +522,48 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
         onZoneResized = { changedZone, deltaW, deltaH ->
             zones = zones.map { zone ->
                 if (zone.label == changedZone.label) zone.resizeBy(deltaW, deltaH) else zone
+            }
+        },
+        onPolygonPointMoved = { changedZone, pointIndex, deltaX, deltaY ->
+            zones = zones.map { zone ->
+                if (zone.label == changedZone.label) zone.movePolygonPointBy(pointIndex, deltaX, deltaY) else zone
+            }
+        },
+        onPolygonDraftPointAdded = { point ->
+            if (polygonDraftPoints.size < MaxPolygonPoints) {
+                polygonDraftPoints = polygonDraftPoints + point
+                displayText = "POINTS ${polygonDraftPoints.size}/${MaxPolygonPoints}"
+            }
+        },
+        onPolygonDraftUndo = {
+            polygonDraftPoints = polygonDraftPoints.dropLast(1)
+            displayText = "POINTS ${polygonDraftPoints.size}/${MaxPolygonPoints}"
+        },
+        onPolygonDraftCancel = {
+            polygonDraftButtonLabel = null
+            polygonDraftPoints = emptyList()
+            displayText = "EDIT MODE"
+        },
+        onPolygonDraftFinish = {
+            val buttonChoice = polygonDraftButtonLabel?.let { label ->
+                RemoteButtonChoices
+                    .filterIsInstance<RemoteElementChoice.Button>()
+                    .firstOrNull { it.label == label }
+            }
+            if (buttonChoice != null && polygonDraftPoints.size >= MinPolygonPoints) {
+                rememberEditState()
+                val label = uniqueZoneLabel(buttonChoice.label, zones)
+                val newZone = createPolygonZone(
+                    label = label,
+                    command = buttonChoice.command,
+                    imagePoints = polygonDraftPoints,
+                )
+                zones = zones + newZone
+                selectedZoneLabel = label
+                displayBoxSelected = false
+                polygonDraftButtonLabel = null
+                polygonDraftPoints = emptyList()
+                displayText = "EDIT $label"
             }
         },
         onDisplaySelected = {
@@ -398,6 +577,8 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
         onDisplayResized = { deltaW, deltaH ->
             displayRect = displayRect.resizeBy(deltaW, deltaH)
         },
+        onUndo = ::undoEdit,
+        onRedo = ::redoEdit,
         onZoneTapped = ::executeCommand,
     )
 
@@ -405,6 +586,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
         OptionsScreen(
             host = host,
             port = port,
+            guideBridgePort = guideBridgePort,
             serverNickname = serverNickname,
             testResult = testResult,
             editMode = editMode,
@@ -414,6 +596,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
             savedServerProfiles = savedServerProfiles,
             onHostChange = { host = it },
             onPortChange = { port = it },
+            onGuideBridgePortChange = { guideBridgePort = it },
             onServerNicknameChange = { serverNickname = it },
             onTestResultChange = { testResult = it },
             onSkinNameChange = {
@@ -426,7 +609,12 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                 displayText = if (it) "EDIT MODE" else "READY"
             },
             onClickEffectChange = { clickEffectEnabled = it },
-            onContentModeChange = { contentMode = it },
+            onContentModeChange = {
+                if (contentMode != it) {
+                    rememberEditState()
+                    contentMode = it
+                }
+            },
             onSaveServerProfile = {
                 val parsedPort = port.toIntOrNull()
                 if (host.isBlank() || parsedPort == null) {
@@ -438,6 +626,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                         nickname = cleanName,
                         host = host.trim(),
                         port = parsedPort.toString(),
+                        guideBridgePort = guideBridgePort.toIntOrNull()?.toString() ?: "4243",
                     )
                     saveServerProfile(context, profile).fold(
                         onSuccess = {
@@ -445,6 +634,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                             serverNickname = profile.nickname
                             host = profile.host
                             port = profile.port
+                            guideBridgePort = profile.guideBridgePort
                             savedServerProfiles = listServerProfiles(context)
                             testResult = "Saved server profile:\n${profile.nickname}"
                         },
@@ -459,6 +649,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                 serverNickname = profile.nickname
                 host = profile.host
                 port = profile.port
+                guideBridgePort = profile.guideBridgePort
                 testResult = "Loaded server profile:\n${profile.nickname}"
             },
             onDeleteServerProfile = { profile ->
@@ -511,6 +702,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                 }
             },
             onClearLayout = {
+                rememberEditState()
                 zones = emptyList()
                 displayBoxVisible = false
                 selectedZoneLabel = null
@@ -518,6 +710,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                 displayText = "CLEARED"
             },
             onResetDefault = {
+                rememberEditState()
                 skinName = ""
                 currentSkinId = DefaultSkinId
                 contentMode = SkinContentMode.Fill
@@ -528,6 +721,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                 displayBoxVisible = true
                 selectedZoneLabel = null
                 displayBoxSelected = false
+                clearEditHistory()
                 displayText = "DEFAULT"
             },
             onDismiss = { settingsOpen = false },
@@ -539,6 +733,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
             onElementSelected = { choice ->
                 when (choice) {
                     RemoteElementChoice.DisplayText -> {
+                        rememberEditState()
                         displayBoxVisible = true
                         selectedZoneLabel = null
                         displayBoxSelected = true
@@ -546,27 +741,59 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                     }
 
                     is RemoteElementChoice.Button -> {
-                        val label = uniqueZoneLabel(choice.label, zones)
+                        shapePickerButtonLabel = choice.label
+                    }
+                }
+                elementPickerOpen = false
+                if (choice is RemoteElementChoice.DisplayText) {
+                    settingsOpen = false
+                    editMode = true
+                }
+            },
+            onDismiss = { elementPickerOpen = false },
+        )
+    }
+
+    shapePickerButtonLabel?.let { buttonLabel ->
+        val buttonChoice = RemoteButtonChoices
+            .filterIsInstance<RemoteElementChoice.Button>()
+            .firstOrNull { it.label == buttonLabel }
+        if (buttonChoice != null) {
+            ZoneShapePickerDialog(
+                buttonLabel = buttonChoice.label,
+                onShapeSelected = { shape ->
+                    shapePickerButtonLabel = null
+                    settingsOpen = false
+                    editMode = true
+                    if (shape == ZoneShape.Polygon) {
+                        polygonDraftButtonLabel = buttonChoice.label
+                        polygonDraftPoints = emptyList()
+                        selectedZoneLabel = null
+                        displayBoxSelected = false
+                        displayText = "POINTS 0/${MaxPolygonPoints}"
+                    } else {
+                        rememberEditState()
+                        val label = uniqueZoneLabel(buttonChoice.label, zones)
                         val newZone = DefaultRemoteZone(
                             label = label,
-                            command = choice.command,
+                            command = buttonChoice.command,
                             x = 0.39f,
                             y = 0.36f,
                             w = 0.22f,
                             h = 0.07f,
+                            shape = shape,
                         )
                         zones = zones + newZone
                         selectedZoneLabel = label
                         displayBoxSelected = false
                         displayText = "EDIT $label"
                     }
-                }
-                elementPickerOpen = false
-                settingsOpen = false
-                editMode = true
-            },
-            onDismiss = { elementPickerOpen = false },
-        )
+                },
+                onDismiss = { shapePickerButtonLabel = null },
+            )
+        } else {
+            shapePickerButtonLabel = null
+        }
     }
 
     if (imageDialogOpen) {
@@ -576,6 +803,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                 imagePicker.launch(arrayOf("image/*"))
             },
             onUseDefault = {
+                rememberEditState()
                 skinName = ""
                 currentSkinId = DefaultSkinId
                 contentMode = SkinContentMode.Fill
@@ -586,6 +814,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                 displayBoxVisible = true
                 selectedZoneLabel = null
                 displayBoxSelected = false
+                clearEditHistory()
                 displayText = "DEFAULT"
                 imageDialogOpen = false
             },
@@ -607,6 +836,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                 displayBoxVisible = true
                 selectedZoneLabel = null
                 displayBoxSelected = false
+                clearEditHistory()
                 displayText = "DEFAULT"
                 installedRemotesOpen = false
             },
@@ -624,6 +854,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                             displayBoxVisible = loaded.displayBoxVisible
                             selectedZoneLabel = null
                             displayBoxSelected = false
+                            clearEditHistory()
                             displayText = "LOADED"
                             testResult = "Loaded skin:\n${loaded.name}"
                             installedRemotesOpen = false
@@ -652,6 +883,7 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                                 displayBoxVisible = true
                                 selectedZoneLabel = null
                                 displayBoxSelected = false
+                                clearEditHistory()
                                 displayText = "DEFAULT"
                             } else {
                                 displayText = "DELETED"
@@ -674,6 +906,7 @@ fun DefaultRemoteScreen(
     modifier: Modifier = Modifier,
     onOpenSettings: () -> Unit = {},
     displayText: String = "READY",
+    displayMode: DisplayMode = DisplayMode.Status,
     editMode: Boolean = false,
     clickEffectEnabled: Boolean = true,
     backgroundFilePath: String? = null,
@@ -682,14 +915,26 @@ fun DefaultRemoteScreen(
     zones: List<DefaultRemoteZone> = DefaultRemoteZones,
     displayRect: DefaultRemoteRect = DefaultRemoteDisplayRect,
     displayBoxVisible: Boolean = true,
+    polygonDraftLabel: String? = null,
+    polygonDraftPoints: List<ZonePoint> = emptyList(),
     selectedZoneLabel: String? = null,
     displayBoxSelected: Boolean = false,
+    canUndo: Boolean = false,
+    canRedo: Boolean = false,
     onZoneSelected: (DefaultRemoteZone) -> Unit = {},
+    onEditGestureStarted: () -> Unit = {},
     onZoneMoved: (DefaultRemoteZone, Float, Float) -> Unit = { _, _, _ -> },
     onZoneResized: (DefaultRemoteZone, Float, Float) -> Unit = { _, _, _ -> },
+    onPolygonPointMoved: (DefaultRemoteZone, Int, Float, Float) -> Unit = { _, _, _, _ -> },
+    onPolygonDraftPointAdded: (ZonePoint) -> Unit = {},
+    onPolygonDraftUndo: () -> Unit = {},
+    onPolygonDraftCancel: () -> Unit = {},
+    onPolygonDraftFinish: () -> Unit = {},
     onDisplaySelected: () -> Unit = {},
     onDisplayMoved: (Float, Float) -> Unit = { _, _ -> },
     onDisplayResized: (Float, Float) -> Unit = { _, _ -> },
+    onUndo: () -> Unit = {},
+    onRedo: () -> Unit = {},
     onZoneTapped: (RemoteCommand) -> Unit = {},
 ) {
     val hapticFeedback = LocalHapticFeedback.current
@@ -753,9 +998,11 @@ fun DefaultRemoteScreen(
                     imageWidthPx = imageWidthPx,
                     imageHeightPx = imageHeightPx,
                     text = displayText,
+                    displayMode = displayMode,
                     editMode = editMode,
                     selected = displayBoxSelected,
                     onSelected = onDisplaySelected,
+                    onEditGestureStarted = onEditGestureStarted,
                     onMoved = onDisplayMoved,
                     onResized = onDisplayResized,
                 )
@@ -782,43 +1029,50 @@ fun DefaultRemoteScreen(
                             if (editMode) {
                                 if (selected) {
                                     Modifier
-                                } else {
+                                } else if (zone.shape == ZoneShape.Rectangle) {
                                     Modifier.clickable(
                                         interactionSource = interactionSource,
                                         indication = null,
                                     ) {
                                         onZoneSelected(zone)
                                     }
+                                } else {
+                                    Modifier.pointerInput(zone) {
+                                        detectTapGestures { offset ->
+                                            if (zone.containsLocalPoint(offset.x, offset.y, size.width.toFloat(), size.height.toFloat())) {
+                                                onZoneSelected(zone)
+                                            }
+                                        }
+                                    }
                                 }
                             } else {
-                                Modifier.clickable(
-                                    interactionSource = interactionSource,
-                                    indication = null,
-                                ) {
-                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    onZoneTapped(zone.command)
+                                if (zone.shape == ZoneShape.Rectangle) {
+                                    Modifier.clickable(
+                                        interactionSource = interactionSource,
+                                        indication = null,
+                                    ) {
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onZoneTapped(zone.command)
+                                    }
+                                } else {
+                                    Modifier.pointerInput(zone) {
+                                        detectTapGestures { offset ->
+                                            if (zone.containsLocalPoint(offset.x, offset.y, size.width.toFloat(), size.height.toFloat())) {
+                                                hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                onZoneTapped(zone.command)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         ),
                     contentAlignment = Alignment.Center,
                 ) {
                     if (editMode) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(
-                                    color = if (selected) {
-                                        Color(0xFF66FF88).copy(alpha = 0.30f)
-                                    } else {
-                                        Color.White.copy(alpha = 0.16f)
-                                    },
-                                    shape = zoneShape,
-                                )
-                                .border(
-                                    width = if (selected) 2.dp else 1.dp,
-                                    color = if (selected) Color(0xFF66FF88) else Color.White.copy(alpha = 0.82f),
-                                    shape = zoneShape,
-                                ),
+                        ZoneShapeOverlay(
+                            zone = zone,
+                            selected = selected,
+                            modifier = Modifier.fillMaxSize(),
                         )
                         Text(
                             text = zone.label,
@@ -835,7 +1089,10 @@ fun DefaultRemoteScreen(
                                     .zIndex(6f)
                                     .pointerInput(zone.label, imageWidthPx, imageHeightPx) {
                                         detectDragGestures(
-                                            onDragStart = { onZoneSelected(zone) },
+                                            onDragStart = {
+                                                onZoneSelected(zone)
+                                                onEditGestureStarted()
+                                            },
                                             onDrag = { change, dragAmount ->
                                                 change.consume()
                                                 onZoneMoved(
@@ -865,7 +1122,10 @@ fun DefaultRemoteScreen(
                                     )
                                     .pointerInput(zone.label, imageWidthPx, imageHeightPx) {
                                         detectDragGestures(
-                                            onDragStart = { onZoneSelected(zone) },
+                                            onDragStart = {
+                                                onZoneSelected(zone)
+                                                onEditGestureStarted()
+                                            },
                                             onDrag = { change, dragAmount ->
                                                 change.consume()
                                                 onZoneResized(
@@ -877,6 +1137,20 @@ fun DefaultRemoteScreen(
                                         )
                                     },
                             )
+                            if (zone.shape == ZoneShape.Polygon) {
+                                zone.polygonPoints.take(MaxPolygonPoints).forEachIndexed { pointIndex, point ->
+                                    PolygonVertexHandle(
+                                        point = point,
+                                        modifier = Modifier
+                                            .align(Alignment.TopStart)
+                                            .zIndex(8f),
+                                        onDragStart = onEditGestureStarted,
+                                        onDrag = { deltaX, deltaY ->
+                                            onPolygonPointMoved(zone, pointIndex, deltaX, deltaY)
+                                        },
+                                    )
+                                }
+                            }
                         }
                     } else if (clickEffectEnabled && pressed) {
                         Box(
@@ -889,6 +1163,21 @@ fun DefaultRemoteScreen(
                         )
                     }
                 }
+            }
+
+            if (polygonDraftLabel != null) {
+                PolygonDraftOverlay(
+                    label = polygonDraftLabel,
+                    points = polygonDraftPoints,
+                    imageLeft = imageLeft,
+                    imageTop = imageTop,
+                    imageWidth = imageWidth,
+                    imageHeight = imageHeight,
+                    onPointAdded = onPolygonDraftPointAdded,
+                    onUndo = onPolygonDraftUndo,
+                    onCancel = onPolygonDraftCancel,
+                    onFinish = onPolygonDraftFinish,
+                )
             }
 
             IconButton(
@@ -922,6 +1211,38 @@ fun DefaultRemoteScreen(
                         )
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 )
+                IconButton(
+                    onClick = onUndo,
+                    enabled = canUndo,
+                    modifier = Modifier
+                        .systemBarsPadding()
+                        .padding(16.dp)
+                        .align(Alignment.BottomStart)
+                        .size(56.dp),
+                ) {
+                    Text(
+                        text = "↶",
+                        color = Color.White.copy(alpha = if (canUndo) 1f else 0.34f),
+                        fontSize = 34.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                IconButton(
+                    onClick = onRedo,
+                    enabled = canRedo,
+                    modifier = Modifier
+                        .systemBarsPadding()
+                        .padding(16.dp)
+                        .align(Alignment.BottomEnd)
+                        .size(56.dp),
+                ) {
+                    Text(
+                        text = "↷",
+                        color = Color.White.copy(alpha = if (canRedo) 1f else 0.34f),
+                        fontSize = 34.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
             }
         }
     }
@@ -937,14 +1258,56 @@ fun DefaultDisplayZone(
     imageWidthPx: Float,
     imageHeightPx: Float,
     text: String,
+    displayMode: DisplayMode,
     editMode: Boolean,
     selected: Boolean,
     onSelected: () -> Unit,
+    onEditGestureStarted: () -> Unit,
     onMoved: (Float, Float) -> Unit,
     onResized: (Float, Float) -> Unit,
 ) {
     val shape = RoundedCornerShape(8.dp)
     val interactionSource = remember { MutableInteractionSource() }
+    var scrollBlock by remember(text, displayMode) { mutableStateOf(0) }
+    val displayBlocks = remember(text) {
+        text.split(Regex("\\n\\s*\\n"))
+            .map { block ->
+                block.lines()
+                    .map { it.trimEnd() }
+                    .filter { it.isNotBlank() }
+                    .take(2)
+                    .joinToString("\n")
+            }
+            .filter { it.isNotBlank() }
+            .ifEmpty { listOf("READY") }
+    }
+    val visibleVfdText = if ((displayMode == DisplayMode.GuideScroll || displayMode == DisplayMode.SystemStatus) && displayBlocks.size > 1) {
+        displayBlocks[scrollBlock % displayBlocks.size]
+    } else {
+        text
+    }
+
+    LaunchedEffect(displayMode, text) {
+        scrollBlock = 0
+        if (displayMode == DisplayMode.GuideScroll || displayMode == DisplayMode.SystemStatus) {
+            while (true) {
+                val currentBlock = displayBlocks[scrollBlock % displayBlocks.size]
+                val nextBlock = displayBlocks[(scrollBlock + 1) % displayBlocks.size]
+                val currentStation = currentBlock.lineSequence().firstOrNull().orEmpty()
+                val nextStation = nextBlock.lineSequence().firstOrNull().orEmpty()
+                delay(
+                    if (displayMode == DisplayMode.SystemStatus) {
+                        2_500
+                    } else if (currentStation != nextStation) {
+                        1_850
+                    } else {
+                        950
+                    },
+                )
+                scrollBlock += 1
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -973,6 +1336,15 @@ fun DefaultDisplayZone(
             ),
         contentAlignment = Alignment.Center,
     ) {
+        VfdDisplayBackground(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(shape),
+            shape = shape,
+            emphasized = displayMode == DisplayMode.GuideScroll ||
+                displayMode == DisplayMode.NowPlaying ||
+                displayMode == DisplayMode.SystemStatus,
+        )
         if (editMode) {
             Box(
                 modifier = Modifier
@@ -993,11 +1365,24 @@ fun DefaultDisplayZone(
             )
         }
         Text(
-            text = text,
-            color = Color(0xFF66FF88),
-            fontSize = 18.sp,
+            text = visibleVfdText.uppercase(),
+            color = when (displayMode) {
+                DisplayMode.Error -> Color(0xFFFF6666)
+                else -> Color(0xFF7CFF9E)
+            },
+            style = TextStyle(
+                fontFamily = VfdFontFamily,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                shadow = Shadow(
+                    color = Color(0xFF35FF6B).copy(alpha = 0.70f),
+                    blurRadius = 12f,
+                ),
+            ),
+            fontSize = 15.sp,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
+            lineHeight = 18.sp,
             maxLines = 2,
         )
         if (editMode && selected) {
@@ -1007,7 +1392,10 @@ fun DefaultDisplayZone(
                     .zIndex(7f)
                     .pointerInput("display-move", imageWidthPx, imageHeightPx) {
                         detectDragGestures(
-                            onDragStart = { onSelected() },
+                            onDragStart = {
+                                onSelected()
+                                onEditGestureStarted()
+                            },
                             onDrag = { change, dragAmount ->
                                 change.consume()
                                 onMoved(
@@ -1036,7 +1424,10 @@ fun DefaultDisplayZone(
                     )
                     .pointerInput("display-resize", imageWidthPx, imageHeightPx) {
                         detectDragGestures(
-                            onDragStart = { onSelected() },
+                            onDragStart = {
+                                onSelected()
+                                onEditGestureStarted()
+                            },
                             onDrag = { change, dragAmount ->
                                 change.consume()
                                 onResized(
@@ -1047,6 +1438,188 @@ fun DefaultDisplayZone(
                         )
                     },
             )
+        }
+    }
+}
+
+@Composable
+fun ZoneShapeOverlay(
+    zone: DefaultRemoteZone,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val fillColor = if (selected) {
+        Color(0xFF66FF88).copy(alpha = 0.30f)
+    } else {
+        Color.White.copy(alpha = 0.16f)
+    }
+    val borderColor = if (selected) Color(0xFF66FF88) else Color.White.copy(alpha = 0.82f)
+    val borderWidth = if (selected) 2.dp else 1.dp
+
+    when (zone.shape) {
+        ZoneShape.Rectangle -> {
+            val shape = RoundedCornerShape(8.dp)
+            Box(
+                modifier = modifier
+                    .background(fillColor, shape = shape)
+                    .border(borderWidth, borderColor, shape),
+            )
+        }
+
+        ZoneShape.Circle -> {
+            Box(
+                modifier = modifier
+                    .background(fillColor, shape = CircleShape)
+                    .border(borderWidth, borderColor, CircleShape),
+            )
+        }
+
+        ZoneShape.Polygon -> {
+            Canvas(modifier = modifier) {
+                val path = zone.polygonPath(size.width, size.height)
+                drawPath(path = path, color = fillColor)
+                drawPath(path = path, color = borderColor, style = androidx.compose.ui.graphics.drawscope.Stroke(borderWidth.toPx()))
+            }
+        }
+    }
+}
+
+@Composable
+fun PolygonVertexHandle(
+    point: ZonePoint,
+    modifier: Modifier = Modifier,
+    onDragStart: () -> Unit,
+    onDrag: (Float, Float) -> Unit,
+) {
+    BoxWithConstraints(
+        modifier = modifier.fillMaxSize(),
+    ) {
+        val density = LocalDensity.current
+        val widthPx = with(density) { maxWidth.toPx() }
+        val heightPx = with(density) { maxHeight.toPx() }
+        Box(
+            modifier = Modifier
+                .offset(
+                    x = maxWidth * point.x - 10.dp,
+                    y = maxHeight * point.y - 10.dp,
+                )
+                .size(20.dp)
+                .background(Color(0xFF66FF88), shape = CircleShape)
+                .border(2.dp, Color.Black.copy(alpha = 0.65f), CircleShape)
+                .pointerInput(point, widthPx, heightPx) {
+                    detectDragGestures(
+                        onDragStart = { onDragStart() },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            if (widthPx > 0f && heightPx > 0f) {
+                                onDrag(dragAmount.x / widthPx, dragAmount.y / heightPx)
+                            }
+                        },
+                    )
+                },
+        )
+    }
+}
+
+@Composable
+fun PolygonDraftOverlay(
+    label: String,
+    points: List<ZonePoint>,
+    imageLeft: androidx.compose.ui.unit.Dp,
+    imageTop: androidx.compose.ui.unit.Dp,
+    imageWidth: androidx.compose.ui.unit.Dp,
+    imageHeight: androidx.compose.ui.unit.Dp,
+    onPointAdded: (ZonePoint) -> Unit,
+    onUndo: () -> Unit,
+    onCancel: () -> Unit,
+    onFinish: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .offset(x = imageLeft, y = imageTop)
+            .size(width = imageWidth, height = imageHeight)
+            .zIndex(20f),
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(points) {
+                    detectTapGestures { offset ->
+                        if (points.size < MaxPolygonPoints) {
+                            onPointAdded(
+                                ZonePoint(
+                                    x = (offset.x / size.width).coerceIn(0f, 1f),
+                                    y = (offset.y / size.height).coerceIn(0f, 1f),
+                                ),
+                            )
+                        }
+                    }
+                },
+        ) {
+            if (points.isNotEmpty()) {
+                val path = Path()
+                path.moveTo(points.first().x * size.width, points.first().y * size.height)
+                points.drop(1).forEach { point ->
+                    path.lineTo(point.x * size.width, point.y * size.height)
+                }
+                drawPath(path, Color(0xFF66FF88), style = androidx.compose.ui.graphics.drawscope.Stroke(3.dp.toPx()))
+                if (points.size >= MinPolygonPoints) {
+                    val closedPath = Path().apply {
+                        moveTo(points.first().x * size.width, points.first().y * size.height)
+                        points.drop(1).forEach { point ->
+                            lineTo(point.x * size.width, point.y * size.height)
+                        }
+                        close()
+                    }
+                    drawPath(closedPath, Color(0xFF66FF88).copy(alpha = 0.16f))
+                }
+            }
+            points.forEachIndexed { index, point ->
+                drawCircle(
+                    color = Color(0xFF66FF88),
+                    radius = 8.dp.toPx(),
+                    center = Offset(point.x * size.width, point.y * size.height),
+                )
+                drawCircle(
+                    color = Color.Black.copy(alpha = 0.7f),
+                    radius = 8.dp.toPx(),
+                    center = Offset(point.x * size.width, point.y * size.height),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()),
+                )
+            }
+        }
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(12.dp)
+                .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
+                .padding(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "$label POLYGON ${points.size}/${MaxPolygonPoints}",
+                color = Color(0xFF66FF88),
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onUndo,
+                    enabled = points.isNotEmpty(),
+                ) {
+                    Text("Undo")
+                }
+                Button(
+                    onClick = onFinish,
+                    enabled = points.size >= MinPolygonPoints,
+                ) {
+                    Text("Finish")
+                }
+                Button(onClick = onCancel) {
+                    Text("Cancel")
+                }
+            }
         }
     }
 }
@@ -1083,9 +1656,44 @@ fun DragHandle(
 }
 
 @Composable
+fun VfdDisplayBackground(
+    modifier: Modifier = Modifier,
+    shape: RoundedCornerShape,
+    emphasized: Boolean,
+) {
+    Box(
+        modifier = modifier
+            .background(
+                color = if (emphasized) Color(0xFF020805) else Color.Black,
+                shape = shape,
+            )
+            .border(
+                width = 1.dp,
+                color = Color(0xFF4AFF7D).copy(alpha = if (emphasized) 0.34f else 0.16f),
+                shape = shape,
+            ),
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val gap = 6.dp.toPx()
+            var y = 0f
+            while (y < size.height) {
+                drawLine(
+                    color = Color(0xFF55FF8A).copy(alpha = if (emphasized) 0.10f else 0.05f),
+                    start = Offset(0f, y),
+                    end = Offset(size.width, y),
+                    strokeWidth = 1f,
+                )
+                y += gap
+            }
+        }
+    }
+}
+
+@Composable
 fun OptionsScreen(
     host: String,
     port: String,
+    guideBridgePort: String,
     serverNickname: String,
     testResult: String?,
     editMode: Boolean,
@@ -1095,6 +1703,7 @@ fun OptionsScreen(
     savedServerProfiles: List<ServerProfile>,
     onHostChange: (String) -> Unit,
     onPortChange: (String) -> Unit,
+    onGuideBridgePortChange: (String) -> Unit,
     onServerNicknameChange: (String) -> Unit,
     onTestResultChange: (String?) -> Unit,
     onSkinNameChange: (String) -> Unit,
@@ -1282,6 +1891,14 @@ fun OptionsScreen(
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        OutlinedTextField(
+                            value = guideBridgePort,
+                            onValueChange = onGuideBridgePortChange,
+                            label = { Text("Guide Bridge Port") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                         Button(
                             onClick = onSaveServerProfile,
                             modifier = Modifier.fillMaxWidth(),
@@ -1440,6 +2057,36 @@ fun ElementPickerDialog(
 }
 
 @Composable
+fun ZoneShapePickerDialog(
+    buttonLabel: String,
+    onShapeSelected: (ZoneShape) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Button Shape") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(buttonLabel, fontWeight = FontWeight.Bold)
+                ZoneShape.entries.forEach { shape ->
+                    Button(
+                        onClick = { onShapeSelected(shape) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(shape.label)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
+}
+
+@Composable
 fun ImageInputDialog(
     onChooseImage: () -> Unit,
     onUseDefault: () -> Unit,
@@ -1535,707 +2182,4 @@ fun RemoteCanvasPlaceholderPreview() {
     FS42RemoteTheme {
         Fs42RemoteApp()
     }
-}
-
-data class DefaultRemoteRect(
-    val x: Float,
-    val y: Float,
-    val w: Float,
-    val h: Float,
-)
-
-data class InstalledRemoteSummary(
-    val id: String,
-    val name: String,
-)
-
-data class LoadedSkin(
-    val name: String,
-    val backgroundFile: File,
-    val aspectRatio: Float,
-    val contentMode: SkinContentMode,
-    val zones: List<DefaultRemoteZone>,
-    val displayRect: DefaultRemoteRect,
-    val displayBoxVisible: Boolean,
-)
-
-data class ServerProfile(
-    val id: String,
-    val nickname: String,
-    val host: String,
-    val port: String,
-)
-
-data class SaveSkinResult(
-    val skinId: String,
-    val exportDescription: String,
-)
-
-private fun DefaultRemoteRect.moveBy(deltaX: Float, deltaY: Float): DefaultRemoteRect {
-    return copy(
-        x = (x + deltaX).coerceIn(0f, 1f - w),
-        y = (y + deltaY).coerceIn(0f, 1f - h),
-    )
-}
-
-private fun DefaultRemoteRect.resizeBy(deltaW: Float, deltaH: Float): DefaultRemoteRect {
-    val minSize = 0.04f
-    return copy(
-        w = (w + deltaW).coerceIn(minSize, 1f - x),
-        h = (h + deltaH).coerceIn(minSize, 1f - y),
-    )
-}
-
-data class DefaultRemoteZone(
-    val label: String,
-    val command: RemoteCommand,
-    val x: Float,
-    val y: Float,
-    val w: Float,
-    val h: Float,
-)
-
-private fun DefaultRemoteZone.moveBy(deltaX: Float, deltaY: Float): DefaultRemoteZone {
-    return copy(
-        x = (x + deltaX).coerceIn(0f, 1f - w),
-        y = (y + deltaY).coerceIn(0f, 1f - h),
-    )
-}
-
-private fun DefaultRemoteZone.resizeBy(deltaW: Float, deltaH: Float): DefaultRemoteZone {
-    val minSize = 0.025f
-    return copy(
-        w = (w + deltaW).coerceIn(minSize, 1f - x),
-        h = (h + deltaH).coerceIn(minSize, 1f - y),
-    )
-}
-
-sealed interface RemoteElementChoice {
-    data object DisplayText : RemoteElementChoice
-
-    data class Button(
-        val label: String,
-        val command: RemoteCommand,
-    ) : RemoteElementChoice
-}
-
-enum class RemoteCommand(val digit: String? = null) {
-    POWER_STOP,
-    GUIDE,
-    CHANNEL_UP,
-    CHANNEL_DOWN,
-    VOLUME_UP,
-    VOLUME_DOWN,
-    MUTE,
-    LAST_CHANNEL,
-    DIGIT_0("0"),
-    DIGIT_1("1"),
-    DIGIT_2("2"),
-    DIGIT_3("3"),
-    DIGIT_4("4"),
-    DIGIT_5("5"),
-    DIGIT_6("6"),
-    DIGIT_7("7"),
-    DIGIT_8("8"),
-    DIGIT_9("9"),
-    PPV_MENU,
-    PPV_PAGE_PREV,
-    PPV_PAGE_NEXT,
-    PPV_SELECT,
-    CUSTOM_HTTP,
-}
-
-enum class SkinContentMode(val jsonName: String) {
-    Fill("fill"),
-    Fit("fit"),
-}
-
-val RemoteButtonChoices = listOf(
-    RemoteElementChoice.Button("POWER", RemoteCommand.POWER_STOP),
-    RemoteElementChoice.Button("GUIDE", RemoteCommand.GUIDE),
-    RemoteElementChoice.Button("CH+", RemoteCommand.CHANNEL_UP),
-    RemoteElementChoice.Button("CH-", RemoteCommand.CHANNEL_DOWN),
-    RemoteElementChoice.Button("VOL+", RemoteCommand.VOLUME_UP),
-    RemoteElementChoice.Button("VOL-", RemoteCommand.VOLUME_DOWN),
-    RemoteElementChoice.Button("MUTE", RemoteCommand.MUTE),
-    RemoteElementChoice.Button("LAST", RemoteCommand.LAST_CHANNEL),
-    RemoteElementChoice.Button("0", RemoteCommand.DIGIT_0),
-    RemoteElementChoice.Button("1", RemoteCommand.DIGIT_1),
-    RemoteElementChoice.Button("2", RemoteCommand.DIGIT_2),
-    RemoteElementChoice.Button("3", RemoteCommand.DIGIT_3),
-    RemoteElementChoice.Button("4", RemoteCommand.DIGIT_4),
-    RemoteElementChoice.Button("5", RemoteCommand.DIGIT_5),
-    RemoteElementChoice.Button("6", RemoteCommand.DIGIT_6),
-    RemoteElementChoice.Button("7", RemoteCommand.DIGIT_7),
-    RemoteElementChoice.Button("8", RemoteCommand.DIGIT_8),
-    RemoteElementChoice.Button("9", RemoteCommand.DIGIT_9),
-    RemoteElementChoice.Button("PPV", RemoteCommand.PPV_MENU),
-    RemoteElementChoice.Button("PAGE LEFT", RemoteCommand.PPV_PAGE_PREV),
-    RemoteElementChoice.Button("PAGE RIGHT", RemoteCommand.PPV_PAGE_NEXT),
-    RemoteElementChoice.Button("SELECT", RemoteCommand.PPV_SELECT),
-)
-
-private const val DefaultSkinId = "default"
-private const val DefaultSkinName = "Default FS42 Remote"
-private const val DefaultRemoteAssetAspectRatio = 1600f / 2843f
-
-private fun uniqueZoneLabel(baseLabel: String, zones: List<DefaultRemoteZone>): String {
-    val existingLabels = zones.map { it.label }.toSet()
-    if (baseLabel !in existingLabels) {
-        return baseLabel
-    }
-
-    var suffix = 2
-    while ("$baseLabel $suffix" in existingLabels) {
-        suffix += 1
-    }
-    return "$baseLabel $suffix"
-}
-
-private suspend fun saveCurrentSkinPackage(
-    context: Context,
-    skinId: String,
-    skinName: String,
-    backgroundFilePath: String?,
-    aspectRatio: Float,
-    contentMode: SkinContentMode,
-    zones: List<DefaultRemoteZone>,
-    displayRect: DefaultRemoteRect,
-    displayBoxVisible: Boolean,
-): Result<SaveSkinResult> = withContext(Dispatchers.IO) {
-    runCatching {
-        val cleanName = skinName.trim()
-            .takeUnless { skinId == DefaultSkinId && it == DefaultSkinName }
-            .orEmpty()
-            .ifBlank { "FS42 Custom Remote" }
-        val cleanSkinId = if (skinId == DefaultSkinId) newSkinId(cleanName) else skinId
-        val skinDirectory = File(context.filesDir, "skins/$cleanSkinId")
-        val assetsDirectory = File(skinDirectory, "assets")
-        val exportDirectory = File(context.filesDir, "exports")
-        val backgroundFile = File(assetsDirectory, "remote-background.webp")
-        val skinJsonFile = File(skinDirectory, "skin.json")
-        val readmeFile = File(skinDirectory, "README.md")
-        val packageFile = File(exportDirectory, "${cleanName.toSkinId()}.fs42skin")
-
-        assetsDirectory.mkdirs()
-        exportDirectory.mkdirs()
-
-        if (backgroundFilePath != null) {
-            File(backgroundFilePath).inputStream().use { input ->
-                backgroundFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-        } else {
-            context.resources.openRawResource(R.drawable.default_remote_asset).use { input ->
-                backgroundFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-        }
-
-        val backgroundDimensions = backgroundFile.imageDimensions()
-        skinJsonFile.writeText(
-            buildSkinJson(
-                name = cleanName,
-                backgroundFile = "assets/remote-background.webp",
-                aspectRatio = aspectRatio,
-                contentMode = contentMode,
-                backgroundWidth = backgroundDimensions?.first,
-                backgroundHeight = backgroundDimensions?.second,
-                zones = zones,
-                displayRect = displayRect,
-                displayBoxVisible = displayBoxVisible,
-            ).toString(2),
-        )
-
-        readmeFile.writeText(
-            """
-            # FS42 Custom Remote
-
-            This `.fs42skin` file is a ZIP package for the FS42 Android Remote Builder.
-
-            Contents:
-            - skin.json
-            - assets/remote-background.webp
-
-            Coordinates are normalized to the background image.
-            """.trimIndent(),
-        )
-
-        packageFile.outputStream().use { fileOutput ->
-            ZipOutputStream(fileOutput).use { zip ->
-                zip.addFile(entryName = "skin.json", file = skinJsonFile)
-                zip.addFile(entryName = "README.md", file = readmeFile)
-                zip.addFile(entryName = "assets/remote-background.webp", file = backgroundFile)
-            }
-        }
-
-        val exportDescription = exportSkinPackageToDocuments(context, packageFile, packageFile.name)
-            ?: packageFile.absolutePath
-
-        SaveSkinResult(
-            skinId = cleanSkinId,
-            exportDescription = exportDescription,
-        )
-    }
-}
-
-private fun buildSkinJson(
-    name: String,
-    backgroundFile: String,
-    aspectRatio: Float,
-    contentMode: SkinContentMode,
-    backgroundWidth: Int? = null,
-    backgroundHeight: Int? = null,
-    zones: List<DefaultRemoteZone>,
-    displayRect: DefaultRemoteRect,
-    displayBoxVisible: Boolean,
-): JSONObject {
-    val backgroundJson = JSONObject()
-        .put("file", backgroundFile)
-        .put("contentMode", contentMode.jsonName)
-        .put("aspectRatio", aspectRatio)
-    if (backgroundWidth != null && backgroundHeight != null) {
-        backgroundJson
-            .put("width", backgroundWidth)
-            .put("height", backgroundHeight)
-    }
-
-    val root = JSONObject()
-        .put("schemaVersion", 1)
-        .put("name", name)
-        .put("author", "")
-        .put("description", "Created with FS42 Android Remote Builder")
-        .put("background", backgroundJson)
-
-    val zoneArray = JSONArray()
-    zones.forEachIndexed { index, zone ->
-        zoneArray.put(
-            JSONObject()
-                .put("id", "${zone.label.toSkinId()}-$index")
-                .put("name", zone.label)
-                .put("command", zone.command.name)
-                .put("rect", zone.rectJson()),
-        )
-    }
-    root.put("zones", zoneArray)
-
-    val displayZones = JSONArray()
-    if (displayBoxVisible) {
-        displayZones.put(
-            JSONObject()
-                .put("id", "display")
-                .put("name", "Display")
-                .put("mode", "AUTO")
-                .put("rect", displayRect.rectJson()),
-        )
-    }
-    root.put("displayZones", displayZones)
-
-    return root
-}
-
-private suspend fun copyImageFromUri(context: Context, uri: Uri): Result<File> = withContext(Dispatchers.IO) {
-    runCatching {
-        val extension = context.imageExtension(uri)
-        val imageFile = File(context.filesDir, "working/background-${System.currentTimeMillis()}.$extension")
-        imageFile.parentFile?.mkdirs()
-        context.contentResolver.openInputStream(uri).use { input ->
-            requireNotNull(input) { "Unable to open selected image." }
-            imageFile.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
-        imageFile
-    }
-}
-
-private suspend fun importSkinPackage(context: Context, uri: Uri): Result<InstalledRemoteSummary> = withContext(Dispatchers.IO) {
-    runCatching {
-        val importRoot = File(context.cacheDir, "skin-import-${UUID.randomUUID()}")
-        importRoot.mkdirs()
-        context.contentResolver.openInputStream(uri).use { input ->
-            requireNotNull(input) { "Unable to open selected skin package." }
-            ZipInputStream(input).use { zip ->
-                var entry = zip.nextEntry
-                while (entry != null) {
-                    val safeFile = safeZipDestination(importRoot, entry)
-                    if (entry.isDirectory) {
-                        safeFile.mkdirs()
-                    } else {
-                        safeFile.parentFile?.mkdirs()
-                        safeFile.outputStream().use { output ->
-                            zip.copyTo(output)
-                        }
-                    }
-                    zip.closeEntry()
-                    entry = zip.nextEntry
-                }
-            }
-        }
-
-        val skinJsonFile = File(importRoot, "skin.json")
-        require(skinJsonFile.isFile) { "Missing skin.json." }
-        val json = JSONObject(skinJsonFile.readText())
-        require(json.optInt("schemaVersion") == 1) { "Unsupported skin schema." }
-        val name = json.optString("name").ifBlank { "Imported Remote" }
-        val backgroundPath = json.getJSONObject("background").getString("file")
-        require(!backgroundPath.contains("..")) { "Invalid background path." }
-        val importedBackground = File(importRoot, backgroundPath)
-        require(importedBackground.isFile) { "Missing background image." }
-
-        val installedId = newSkinId(name)
-        val skinDirectory = File(context.filesDir, "skins/$installedId")
-        val assetsDirectory = File(skinDirectory, "assets")
-        assetsDirectory.mkdirs()
-        val backgroundFile = File(assetsDirectory, "remote-background.webp")
-        importedBackground.inputStream().use { input ->
-            backgroundFile.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
-
-        val installedJson = buildSkinJson(
-            name = name,
-            backgroundFile = "assets/remote-background.webp",
-            aspectRatio = json.getJSONObject("background")
-                .optDouble("aspectRatio", backgroundFile.imageAspectRatio()?.toDouble() ?: DefaultRemoteAssetAspectRatio.toDouble())
-                .toFloat(),
-            contentMode = json.parseContentMode(),
-            backgroundWidth = backgroundFile.imageDimensions()?.first,
-            backgroundHeight = backgroundFile.imageDimensions()?.second,
-            zones = json.parseZones(),
-            displayRect = json.parseDisplayRect(),
-            displayBoxVisible = json.parseDisplayVisible(),
-        )
-        File(skinDirectory, "skin.json").writeText(installedJson.toString(2))
-        importRoot.deleteRecursively()
-        InstalledRemoteSummary(installedId, name)
-    }
-}
-
-private fun loadInstalledSkin(context: Context, skinId: String): Result<LoadedSkin> = runCatching {
-    require(skinId != DefaultSkinId) { "The default remote is bundled, not installed." }
-    val skinDirectory = File(context.filesDir, "skins/$skinId")
-    val skinJsonFile = File(skinDirectory, "skin.json")
-    require(skinJsonFile.isFile) { "Missing installed skin." }
-    val json = JSONObject(skinJsonFile.readText())
-    val backgroundPath = json.getJSONObject("background").getString("file")
-    require(!backgroundPath.contains("..")) { "Invalid background path." }
-    val backgroundFile = File(skinDirectory, backgroundPath)
-    require(backgroundFile.isFile) { "Missing background image." }
-    LoadedSkin(
-        name = json.optString("name").ifBlank { "Installed Remote" },
-        backgroundFile = backgroundFile,
-        aspectRatio = json.getJSONObject("background")
-            .optDouble("aspectRatio", backgroundFile.imageAspectRatio()?.toDouble() ?: DefaultRemoteAssetAspectRatio.toDouble())
-            .toFloat(),
-        contentMode = json.parseContentMode(),
-        zones = json.parseZones(),
-        displayRect = json.parseDisplayRect(),
-        displayBoxVisible = json.parseDisplayVisible(),
-    )
-}
-
-private fun listInstalledRemotes(context: Context): List<InstalledRemoteSummary> {
-    val skinsDirectory = File(context.filesDir, "skins")
-    return skinsDirectory.listFiles()
-        ?.filter { it.isDirectory && it.name != DefaultSkinId && File(it, "skin.json").isFile }
-        ?.mapNotNull { directory ->
-            runCatching {
-                val json = JSONObject(File(directory, "skin.json").readText())
-                InstalledRemoteSummary(
-                    id = directory.name,
-                    name = json.optString("name").ifBlank { directory.name },
-                )
-            }.getOrNull()
-        }
-        ?.sortedBy { it.name.lowercase() }
-        .orEmpty()
-}
-
-private fun listServerProfiles(context: Context): List<ServerProfile> {
-    val profilesFile = serverProfilesFile(context)
-    if (!profilesFile.isFile) {
-        return emptyList()
-    }
-
-    return runCatching {
-        val profileArray = JSONArray(profilesFile.readText())
-        buildList {
-            for (index in 0 until profileArray.length()) {
-                val profileJson = profileArray.optJSONObject(index) ?: continue
-                val id = profileJson.optString("id")
-                val host = profileJson.optString("host")
-                val port = profileJson.optString("port")
-                if (id.isBlank() || host.isBlank() || port.isBlank()) {
-                    continue
-                }
-                add(
-                    ServerProfile(
-                        id = id,
-                        nickname = profileJson.optString("nickname").ifBlank { host },
-                        host = host,
-                        port = port,
-                    ),
-                )
-            }
-        }.sortedBy { it.nickname.lowercase() }
-    }.getOrDefault(emptyList())
-}
-
-private fun saveServerProfile(context: Context, profile: ServerProfile): Result<Unit> = runCatching {
-    require(profile.host.isNotBlank()) { "Host is required." }
-    require(profile.port.toIntOrNull() != null) { "Port must be numeric." }
-    val profiles = (listServerProfiles(context).filterNot { it.id == profile.id } + profile)
-        .sortedBy { it.nickname.lowercase() }
-    val profileArray = JSONArray()
-    profiles.forEach { saved ->
-        profileArray.put(
-            JSONObject()
-                .put("id", saved.id)
-                .put("nickname", saved.nickname)
-                .put("host", saved.host)
-                .put("port", saved.port),
-        )
-    }
-    val profilesFile = serverProfilesFile(context)
-    profilesFile.parentFile?.mkdirs()
-    profilesFile.writeText(profileArray.toString(2))
-}
-
-private fun deleteServerProfile(context: Context, profileId: String): Result<Unit> = runCatching {
-    require(profileId.isNotBlank()) { "Missing server profile id." }
-    val profiles = listServerProfiles(context).filterNot { it.id == profileId }
-    val profileArray = JSONArray()
-    profiles.forEach { saved ->
-        profileArray.put(
-            JSONObject()
-                .put("id", saved.id)
-                .put("nickname", saved.nickname)
-                .put("host", saved.host)
-                .put("port", saved.port),
-        )
-    }
-    val profilesFile = serverProfilesFile(context)
-    profilesFile.parentFile?.mkdirs()
-    profilesFile.writeText(profileArray.toString(2))
-}
-
-private fun serverProfilesFile(context: Context): File {
-    return File(context.filesDir, "server-profiles.json")
-}
-
-private suspend fun deleteInstalledSkin(context: Context, skinId: String): Result<Unit> = withContext(Dispatchers.IO) {
-    runCatching {
-        require(skinId != DefaultSkinId) { "The default remote cannot be deleted." }
-        val skinDirectory = File(context.filesDir, "skins/$skinId")
-        require(!skinId.contains("..") && !skinId.contains(File.separator)) { "Invalid skin id." }
-        if (skinDirectory.exists()) {
-            require(skinDirectory.deleteRecursively()) { "Could not delete installed skin." }
-        }
-    }
-}
-
-private fun exportSkinPackageToDocuments(context: Context, packageFile: File, fileName: String): String? {
-    return runCatching {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val values = android.content.ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                put(MediaStore.MediaColumns.MIME_TYPE, "application/zip")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOCUMENTS}/FS42 Remotes")
-            }
-            val uri = context.contentResolver.insert(MediaStore.Files.getContentUri("external"), values)
-                ?: return@runCatching null
-            context.contentResolver.openOutputStream(uri).use { output ->
-                requireNotNull(output) { "Unable to open export destination." }
-                packageFile.inputStream().use { input ->
-                    input.copyTo(output)
-                }
-            }
-            "Documents/FS42 Remotes/$fileName"
-        } else {
-            val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "FS42 Remotes")
-            directory.mkdirs()
-            val exportFile = File(directory, fileName)
-            packageFile.copyTo(exportFile, overwrite = true)
-            exportFile.absolutePath
-        }
-    }.getOrNull()
-}
-
-private fun DefaultRemoteRect.rectJson(): JSONObject {
-    return JSONObject()
-        .put("x", x)
-        .put("y", y)
-        .put("w", w)
-        .put("h", h)
-}
-
-private fun DefaultRemoteZone.rectJson(): JSONObject {
-    return JSONObject()
-        .put("x", x)
-        .put("y", y)
-        .put("w", w)
-        .put("h", h)
-}
-
-private fun JSONObject.parseContentMode(): SkinContentMode {
-    val background = optJSONObject("background")
-    return when (background?.optString("contentMode", SkinContentMode.Fit.jsonName)?.lowercase()) {
-        SkinContentMode.Fill.jsonName -> SkinContentMode.Fill
-        else -> SkinContentMode.Fit
-    }
-}
-
-private fun JSONObject.parseZones(): List<DefaultRemoteZone> {
-    val zoneArray = optJSONArray("zones") ?: return emptyList()
-    return buildList {
-        for (index in 0 until zoneArray.length()) {
-            val zoneJson = zoneArray.optJSONObject(index) ?: continue
-            val command = runCatching {
-                RemoteCommand.valueOf(zoneJson.getString("command"))
-            }.getOrNull() ?: continue
-            val rect = zoneJson.optJSONObject("rect") ?: continue
-            val zone = DefaultRemoteZone(
-                label = zoneJson.optString("name").ifBlank { command.name },
-                command = command,
-                x = rect.optDouble("x", 0.1).toFloat(),
-                y = rect.optDouble("y", 0.1).toFloat(),
-                w = rect.optDouble("w", 0.1).toFloat(),
-                h = rect.optDouble("h", 0.1).toFloat(),
-            ).coerceValid()
-            if (zone.w > 0f && zone.h > 0f) {
-                add(zone)
-            }
-        }
-    }
-}
-
-private fun JSONObject.parseDisplayRect(): DefaultRemoteRect {
-    val displayZones = optJSONArray("displayZones")
-    val rect = displayZones
-        ?.optJSONObject(0)
-        ?.optJSONObject("rect")
-        ?: return DefaultRemoteDisplayRect
-    return DefaultRemoteRect(
-        x = rect.optDouble("x", DefaultRemoteDisplayRect.x.toDouble()).toFloat(),
-        y = rect.optDouble("y", DefaultRemoteDisplayRect.y.toDouble()).toFloat(),
-        w = rect.optDouble("w", DefaultRemoteDisplayRect.w.toDouble()).toFloat(),
-        h = rect.optDouble("h", DefaultRemoteDisplayRect.h.toDouble()).toFloat(),
-    ).coerceValid()
-}
-
-private fun JSONObject.parseDisplayVisible(): Boolean {
-    return (optJSONArray("displayZones")?.length() ?: 0) > 0
-}
-
-private fun DefaultRemoteRect.coerceValid(): DefaultRemoteRect {
-    val coercedW = w.coerceIn(0.025f, 1f)
-    val coercedH = h.coerceIn(0.025f, 1f)
-    return copy(
-        x = x.coerceIn(0f, 1f - coercedW),
-        y = y.coerceIn(0f, 1f - coercedH),
-        w = coercedW,
-        h = coercedH,
-    )
-}
-
-private fun DefaultRemoteZone.coerceValid(): DefaultRemoteZone {
-    val rect = DefaultRemoteRect(x, y, w, h).coerceValid()
-    return copy(x = rect.x, y = rect.y, w = rect.w, h = rect.h)
-}
-
-private fun String.toSkinId(): String {
-    return lowercase()
-        .replace(Regex("[^a-z0-9]+"), "-")
-        .trim('-')
-        .ifBlank { "zone" }
-}
-
-private fun newSkinId(name: String): String {
-    return "${name.toSkinId()}-${System.currentTimeMillis()}"
-}
-
-private fun newServerProfileId(name: String): String {
-    return "server-${name.toSkinId()}-${System.currentTimeMillis()}"
-}
-
-private fun Context.imageExtension(uri: Uri): String {
-    val type = contentResolver.getType(uri)
-    val extension = type?.let { MimeTypeMap.getSingleton().getExtensionFromMimeType(it) }
-    return extension?.takeIf { it.isNotBlank() } ?: "webp"
-}
-
-private fun File.imageAspectRatio(): Float? {
-    val dimensions = imageDimensions() ?: return null
-    return dimensions.first.toFloat() / dimensions.second.toFloat()
-}
-
-private fun File.imageDimensions(): Pair<Int, Int>? {
-    val options = BitmapFactory.Options().apply {
-        inJustDecodeBounds = true
-    }
-    BitmapFactory.decodeFile(absolutePath, options)
-    if (options.outWidth <= 0 || options.outHeight <= 0) {
-        return null
-    }
-    return options.outWidth to options.outHeight
-}
-
-private fun safeZipDestination(root: File, entry: ZipEntry): File {
-    val destination = File(root, entry.name)
-    val rootPath = root.canonicalPath
-    val destinationPath = destination.canonicalPath
-    require(destinationPath == rootPath || destinationPath.startsWith("$rootPath${File.separator}")) {
-        "Invalid ZIP entry: ${entry.name}"
-    }
-    return destination
-}
-
-private fun ZipOutputStream.addFile(entryName: String, file: File) {
-    putNextEntry(ZipEntry(entryName))
-    file.inputStream().use { input ->
-        input.copyTo(this)
-    }
-    closeEntry()
-}
-
-val DefaultRemoteDisplayRect = DefaultRemoteRect(
-    x = 0.258f,
-    y = 0.840f,
-    w = 0.470f,
-    h = 0.093f,
-)
-
-val DefaultRemoteZones = listOf(
-    DefaultRemoteZone("POWER", RemoteCommand.POWER_STOP, 0.265f, 0.063f, 0.128f, 0.061f),
-    DefaultRemoteZone("GUIDE", RemoteCommand.GUIDE, 0.423f, 0.128f, 0.159f, 0.067f),
-    DefaultRemoteZone("VOL+", RemoteCommand.VOLUME_UP, 0.264f, 0.194f, 0.135f, 0.087f),
-    DefaultRemoteZone("VOL-", RemoteCommand.VOLUME_DOWN, 0.264f, 0.287f, 0.135f, 0.078f),
-    DefaultRemoteZone("CH+", RemoteCommand.CHANNEL_UP, 0.602f, 0.194f, 0.133f, 0.087f),
-    DefaultRemoteZone("CH-", RemoteCommand.CHANNEL_DOWN, 0.602f, 0.287f, 0.133f, 0.078f),
-    DefaultRemoteZone("1", RemoteCommand.DIGIT_1, 0.260f, 0.408f, 0.146f, 0.066f),
-    DefaultRemoteZone("2", RemoteCommand.DIGIT_2, 0.424f, 0.408f, 0.149f, 0.066f),
-    DefaultRemoteZone("3", RemoteCommand.DIGIT_3, 0.592f, 0.408f, 0.148f, 0.066f),
-    DefaultRemoteZone("4", RemoteCommand.DIGIT_4, 0.260f, 0.479f, 0.146f, 0.066f),
-    DefaultRemoteZone("5", RemoteCommand.DIGIT_5, 0.424f, 0.479f, 0.149f, 0.066f),
-    DefaultRemoteZone("6", RemoteCommand.DIGIT_6, 0.592f, 0.479f, 0.148f, 0.066f),
-    DefaultRemoteZone("7", RemoteCommand.DIGIT_7, 0.260f, 0.550f, 0.146f, 0.065f),
-    DefaultRemoteZone("8", RemoteCommand.DIGIT_8, 0.424f, 0.550f, 0.149f, 0.065f),
-    DefaultRemoteZone("9", RemoteCommand.DIGIT_9, 0.592f, 0.550f, 0.148f, 0.065f),
-    DefaultRemoteZone("MUTE", RemoteCommand.MUTE, 0.260f, 0.621f, 0.146f, 0.066f),
-    DefaultRemoteZone("0", RemoteCommand.DIGIT_0, 0.424f, 0.621f, 0.149f, 0.066f),
-    DefaultRemoteZone("LAST", RemoteCommand.LAST_CHANNEL, 0.592f, 0.621f, 0.148f, 0.066f),
-    DefaultRemoteZone("PPV PAGE LEFT", RemoteCommand.PPV_PAGE_PREV, 0.234f, 0.733f, 0.123f, 0.064f),
-    DefaultRemoteZone("PPV", RemoteCommand.PPV_MENU, 0.368f, 0.734f, 0.126f, 0.064f),
-    DefaultRemoteZone("PPV SELECT", RemoteCommand.PPV_SELECT, 0.506f, 0.735f, 0.133f, 0.064f),
-    DefaultRemoteZone("PPV PAGE RIGHT", RemoteCommand.PPV_PAGE_NEXT, 0.648f, 0.733f, 0.121f, 0.064f),
-)
-
-private val ChannelNumberPattern = """"channel_number"\s*:\s*(\d+)""".toRegex()
-
-private fun String.extractChannelNumber(): Int? {
-    return ChannelNumberPattern.find(this)?.groupValues?.getOrNull(1)?.toIntOrNull()
 }

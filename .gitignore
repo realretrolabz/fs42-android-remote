@@ -5,6 +5,9 @@
 **/.kotlin/
 **/build/
 **/local.properties
+**/.env
+**/.venv/
+**/venv/
 /build
 /captures
 /.codex-change-log/
@@ -17,9 +20,14 @@
 .externalNativeBuild
 .cxx
 *.apk
+!/release/
+!/release/*.apk
 *.ap_
 *.aab
 *.dex
 *.class
+*.pyc
+__pycache__/
+**/__pycache__/
 *.log
 hs_err_pid*
