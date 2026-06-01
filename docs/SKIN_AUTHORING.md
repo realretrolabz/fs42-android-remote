@@ -17,7 +17,9 @@ The default skin cannot be deleted. Custom installed skins can be deleted.
 
 ## Images And Scaling
 
-Use a tall remote image with the buttons already drawn into the artwork. The app does not draw the button graphics for you; it only draws invisible or editable touch zones over the image.
+Traditional tall remote images work especially well, and they are the easiest place to start. They are not the only option, though. A skin can be a photo of a real remote, a custom graphic, a novelty layout, a dashboard-style panel, or anything else you can make tappable.
+
+The app does not draw the button graphics for you; it draws invisible or editable touch zones over whatever image you choose. Let the artwork be as practical or as strange as you want, then place zones where taps should happen.
 
 The `Fill Screen` toggle controls how the image is displayed:
 
