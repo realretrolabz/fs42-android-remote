@@ -37,7 +37,7 @@ MEM: 42%
 
 ## Run
 
-Install beside an existing FieldStation42 checkout:
+Install beside an existing FieldStation42 install directory:
 
 ```bash
 ../install_guide_bridge.sh

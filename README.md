@@ -42,7 +42,9 @@ See [Skin Authoring](docs/SKIN_AUTHORING.md) for how to create remote skins, cho
 
 ## Guide Bridge Host Install
 
-The guide bridge is not installed on the Android device. It is installed on the same machine that already runs the original FieldStation42 repo, usually directly into that FieldStation42 checkout.
+The guide bridge is not installed on the Android device. It is installed on the same machine that already runs the original FieldStation42 repo, usually directly into that FieldStation42 install directory.
+
+The bridge exists to feed the Android app's virtual VFD display. It converts FieldStation42 guide data into simple text for current/next show scrolling, and it also exposes host temperature, CPU load, and memory load for the remote's status display.
 
 The installer copies the bridge files into the FieldStation42 folder and prefers the existing FieldStation42 Python venv at `env/` for dependencies and runtime.
 
