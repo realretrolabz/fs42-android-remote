@@ -4,9 +4,39 @@ Native Android remote tooling and host-side helpers for FieldStation42.
 
 ## Layout
 
-- `android/` contains the Android remote app.
+- `android/` contains the Android project to open, edit, and compile.
+- `release/` contains the prebuilt APK for sideload testing.
 - `fs42-guide-bridge/` contains the optional guide/status bridge.
 - `install_guide_bridge.sh` installs the guide bridge onto the FieldStation42 host.
+
+## Android App
+
+To build the Android app from source, open or compile the project in `android/`.
+
+```bash
+cd android
+./gradlew assembleDebug
+```
+
+The generated debug APK will be under:
+
+```text
+android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+## Installable APK
+
+A debug-signed APK for sideload testing is checked in at:
+
+```text
+release/fs42-remote-debug.apk
+```
+
+Copy or download that APK onto an Android device and sideload it. For a formal public release, build and sign a release APK separately.
+
+## Creating Skins
+
+See [Skin Authoring](docs/SKIN_AUTHORING.md) for how to create remote skins, choose image scaling, place touch zones, and use rectangle, circle, and polygon hit areas.
 
 ## Guide Bridge Host Install
 
@@ -19,7 +49,3 @@ The installer copies the bridge files into the FieldStation42 folder and prefers
 ```
 
 The Android app then talks to the bridge over LAN, defaulting to port `4243`.
-
-## APK
-
-A debug-signed APK for sideload testing is checked in at `release/fs42-remote-debug.apk`.
