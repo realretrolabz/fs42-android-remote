@@ -265,9 +265,7 @@ Channel
 ├─ Number 6
 ├─ Number 7
 ├─ Number 8
-├─ Number 9
-├─ Clear
-└─ Enter
+└─ Number 9
 
 Volume
 ├─ VOL+
@@ -276,7 +274,6 @@ Volume
 
 Playback / System
 ├─ Power / Stop
-├─ Info
 └─ Guide
 
 PPV
@@ -298,7 +295,6 @@ Use stable internal command names. Do not store raw endpoint URLs for built-in c
 ```kotlin
 enum class RemoteCommand {
     POWER_STOP,
-    INFO_STATUS,
     GUIDE,
     CHANNEL_UP,
     CHANNEL_DOWN,
@@ -316,8 +312,6 @@ enum class RemoteCommand {
     DIGIT_7,
     DIGIT_8,
     DIGIT_9,
-    CLEAR_CHANNEL_INPUT,
-    ENTER_CHANNEL,
     PPV_MENU,
     PPV_PAGE_PREV,
     PPV_PAGE_NEXT,
@@ -362,10 +356,9 @@ curl http://10.0.0.99:4242/player/status
 
 Purpose:
 
-- Android-side INFO display
 - Current channel detection
-- Current show/title info
-- Current file/status info
+- Current show/title metadata
+- Current file/status metadata
 
 Important: this does not display anything on the FS42 video output. It only returns JSON to the client.
 
@@ -405,25 +398,6 @@ Purpose:
 
 This does not guarantee playback is healthy; it only indicates command queue connectivity.
 
-#### Backend system info
-
-```http
-GET /player/info
-```
-
-Example:
-
-```bash
-curl http://10.0.0.99:4242/player/info
-```
-
-Purpose:
-
-- Debug screen
-- Backend CPU/memory/platform info
-
----
-
 ## Channel commands
 
 ### Channel up
@@ -462,14 +436,14 @@ Example:
 curl http://10.0.0.99:4242/player/channels/55
 ```
 
-Use this for numeric entry + Enter.
+Use this for direct tuning after numeric entry is resolved by the app.
 
 Client behavior:
 
 - Digits append to an app-local channel buffer.
-- Clear empties the buffer.
-- Enter sends `/player/channels/{buffer}`.
-- After successful tune, clear the buffer.
+- The app tunes `/player/channels/{buffer}` automatically after a short input timeout or after the configured maximum digit count.
+- After successful tune, reset the buffer.
+- Do not add `CLR` or `ENTER` commands/buttons back into the project.
 
 ### Guide
 
@@ -699,7 +673,6 @@ Pseudo-code:
 suspend fun execute(command: RemoteCommand) {
     when (command) {
         POWER_STOP -> api.get("/player/commands/stop")
-        INFO_STATUS -> showStatusPanel(api.getJson("/player/status"))
         GUIDE -> api.post("/player/channels/guide")
         CHANNEL_UP -> api.get("/player/channels/up")
         CHANNEL_DOWN -> api.get("/player/channels/down")
@@ -717,8 +690,6 @@ suspend fun execute(command: RemoteCommand) {
         DIGIT_7 -> appendDigit("7")
         DIGIT_8 -> appendDigit("8")
         DIGIT_9 -> appendDigit("9")
-        CLEAR_CHANNEL_INPUT -> clearChannelInput()
-        ENTER_CHANNEL -> tuneBufferedChannel()
         PPV_MENU -> openOrLoadPpvForCurrentChannel()
         PPV_PAGE_PREV -> api.post("/ppv/$currentChannel/key/PageDown")
         PPV_PAGE_NEXT -> api.post("/ppv/$currentChannel/key/PageUp")
@@ -739,12 +710,12 @@ The numeric keypad should not immediately tune on each digit. Instead:
 ```text
 Tap 5 → buffer = "5"
 Tap 5 → buffer = "55"
-Tap ENTER → GET /player/channels/55
+Short timeout → GET /player/channels/55
 ```
 
-`CLR` clears the buffer.
+The channel buffer resets after a successful tune or when a new numeric sequence starts.
 
-Optional later feature: auto-enter after timeout or max digits. Do not implement first unless asked.
+No `CLR` or `ENTER` button/command should be implemented.
 
 ### Last channel
 
@@ -790,32 +761,28 @@ Then parse `channel_number` or equivalent defensively.
 The bundled/default skin should use this exact button set only:
 
 ```text
-POWER        INFO
+POWER        [FS logo]
 
        GUIDE
 
-CH+          VOL+
-CH-          VOL-
-
-MUTE         LAST
+VOL+         CH+
+VOL-         CH-
 
 1   2   3
 4   5   6
 7   8   9
-CLR 0 ENTER
+MUTE 0 LAST
 
-PPV
-←           →
-SELECT
+←   PPV SELECT  →
 
-[blank info display]     [FS logo]
+[blank display area]
 ```
 
 Do not add extra buttons to the default skin.
 
 Use `SELECT`, not `ORDER`.
 
-The info display area should be available for app-side status display, but skins may leave it blank visually.
+The display area should be available for app-side status display, but skins may leave it blank visually.
 
 ---
 
@@ -838,7 +805,6 @@ CUSTOM_TEXT
 Recommended behavior:
 
 - Digit buttons show the channel buffer, for example `CH 055`.
-- INFO fetches `/player/status` and shows now-playing data.
 - GUIDE may show guide data if the optional companion guide API is available.
 - PPV shows a PPV mode message, for example `PPV MODE  ◀ ▶ PAGE  SELECT`.
 - Connection errors show a short error such as `FS42 OFFLINE`.
@@ -988,7 +954,7 @@ Build in this order:
 1. Server settings screen with test connection to `/player/status`.
 2. Hardcoded default skin profile with zones and built-in command execution.
 3. Remote use screen with background image + tappable zones.
-4. Channel buffer, Enter, Clear, Last Channel logic.
+4. Channel buffer with auto-tune timeout, plus Last Channel logic.
 5. Skin editor: add/move/resize zones.
 6. Command picker.
 7. Save/load skins locally.
@@ -1129,8 +1095,6 @@ Use these names consistently:
 ```text
 GET  /player/status
 GET  /player/status/queue_connected
-GET  /player/info
-
 GET  /player/channels/up
 GET  /player/channels/down
 GET  /player/channels/{number}
@@ -1157,4 +1121,3 @@ POST /player/ticker
 Optional companion guide sidecar:
 GET  http://<host>:4243/guide/view
 ```
-

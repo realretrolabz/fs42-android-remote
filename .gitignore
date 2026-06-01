@@ -1,5 +1,10 @@
 *.iml
 .gradle
+**/.gradle/
+**/.idea/
+**/.kotlin/
+**/build/
+**/local.properties
 /build
 /captures
 /.codex-change-log/
