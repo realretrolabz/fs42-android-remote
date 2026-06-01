@@ -2,6 +2,8 @@
 
 Native Android remote tooling and host-side helpers for FieldStation42.
 
+![FS42 Android Remote Maker default remote screen](docs/images/default-remote-screenshot.jpg)
+
 ## Layout
 
 - `android/` contains the Android project to open, edit, and compile.
