@@ -2,7 +2,17 @@
 
 Native Android remote tooling and host-side helpers for FieldStation42.
 
-![FS42 Android Remote Maker default remote screen](docs/images/default-remote-screenshot.jpg)
+<img src="docs/images/default-remote-screenshot.jpg" alt="FS42 Android Remote Maker default remote screen" width="360">
+
+## Disclaimer
+
+This is an unofficial FieldStation42 utility built for my own setup and shared as-is in case it helps others.
+
+It is not affiliated with, endorsed by, or supported by the official FieldStation42 project.
+
+This project was developed with AI-assisted coding tools and manually reviewed/tested against my own use case. Specific bug reports, reproducible issues, and pull requests are welcome.
+
+General debates about AI-assisted development are outside the scope of this repo.
 
 ## Layout
 
