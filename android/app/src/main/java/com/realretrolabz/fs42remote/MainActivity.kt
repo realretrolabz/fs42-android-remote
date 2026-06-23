@@ -67,6 +67,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -547,6 +548,11 @@ fun Fs42RemoteApp(modifier: Modifier = Modifier) {
                 if (zone.label == changedZone.label) zone.resizeBy(deltaW, deltaH) else zone
             }
         },
+        onZoneDeleted = { deletedZone ->
+            zones = zones.filterNot { zone -> zone.label == deletedZone.label }
+            selectedZoneLabel = null
+            displayText = "DELETED"
+        },
         onPolygonPointMoved = { changedZone, pointIndex, deltaX, deltaY ->
             zones = zones.map { zone ->
                 if (zone.label == changedZone.label) zone.movePolygonPointBy(pointIndex, deltaX, deltaY) else zone
@@ -948,6 +954,7 @@ fun DefaultRemoteScreen(
     onEditGestureStarted: () -> Unit = {},
     onZoneMoved: (DefaultRemoteZone, Float, Float) -> Unit = { _, _, _ -> },
     onZoneResized: (DefaultRemoteZone, Float, Float) -> Unit = { _, _, _ -> },
+    onZoneDeleted: (DefaultRemoteZone) -> Unit = {},
     onPolygonPointMoved: (DefaultRemoteZone, Int, Float, Float) -> Unit = { _, _, _, _ -> },
     onPolygonDraftPointAdded: (ZonePoint) -> Unit = {},
     onPolygonDraftUndo: () -> Unit = {},
@@ -962,6 +969,8 @@ fun DefaultRemoteScreen(
 ) {
     val hapticFeedback = LocalHapticFeedback.current
     val density = LocalDensity.current
+    var draggingZoneLabel by remember { mutableStateOf<String?>(null) }
+    var dragCenterPx by remember { mutableStateOf(Offset.Zero) }
 
     Surface(
         modifier = modifier
@@ -1010,6 +1019,28 @@ fun DefaultRemoteScreen(
 
             val imageWidthPx = with(density) { imageWidth.toPx() }
             val imageHeightPx = with(density) { imageHeight.toPx() }
+            val imageLeftPx = with(density) { imageLeft.toPx() }
+            val imageTopPx = with(density) { imageTop.toPx() }
+            val containerWidthPx = with(density) { maxWidth.toPx() }
+            val containerHeightPx = with(density) { maxHeight.toPx() }
+            val trashSize = 72.dp
+            val trashHitSize = 112.dp
+            val trashBottomPadding = 28.dp
+            val trashSizePx = with(density) { trashSize.toPx() }
+            val trashHitSizePx = with(density) { trashHitSize.toPx() }
+            val trashBottomPaddingPx = with(density) { trashBottomPadding.toPx() }
+            val trashCenter = Offset(
+                x = containerWidthPx / 2f,
+                y = containerHeightPx - trashBottomPaddingPx - (trashSizePx / 2f),
+            )
+
+            fun isTrashHit(point: Offset): Boolean {
+                val halfHitSize = trashHitSizePx / 2f
+                return point.x in (trashCenter.x - halfHitSize)..(trashCenter.x + halfHitSize) &&
+                    point.y in (trashCenter.y - halfHitSize)..(trashCenter.y + halfHitSize)
+            }
+
+            val isDraggingOverTrash = draggingZoneLabel != null && isTrashHit(dragCenterPx)
 
             if (displayBoxVisible) {
                 DefaultDisplayZone(
@@ -1115,14 +1146,30 @@ fun DefaultRemoteScreen(
                                             onDragStart = {
                                                 onZoneSelected(zone)
                                                 onEditGestureStarted()
+                                                draggingZoneLabel = zone.label
+                                                dragCenterPx = Offset(
+                                                    x = imageLeftPx + imageWidthPx * (zone.x + zone.w / 2f),
+                                                    y = imageTopPx + imageHeightPx * (zone.y + zone.h / 2f),
+                                                )
                                             },
                                             onDrag = { change, dragAmount ->
                                                 change.consume()
+                                                dragCenterPx += dragAmount
                                                 onZoneMoved(
                                                     zone,
                                                     dragAmount.x / imageWidthPx,
                                                     dragAmount.y / imageHeightPx,
                                                 )
+                                            },
+                                            onDragEnd = {
+                                                if (isTrashHit(dragCenterPx)) {
+                                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    onZoneDeleted(zone)
+                                                }
+                                                draggingZoneLabel = null
+                                            },
+                                            onDragCancel = {
+                                                draggingZoneLabel = null
                                             },
                                         )
                                     },
@@ -1203,6 +1250,17 @@ fun DefaultRemoteScreen(
                 )
             }
 
+            if (editMode && draggingZoneLabel != null) {
+                TrashDropTarget(
+                    active = isDraggingOverTrash,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = trashBottomPadding)
+                        .size(trashSize)
+                        .zIndex(30f),
+                )
+            }
+
             IconButton(
                 onClick = onOpenSettings,
                 modifier = Modifier
@@ -1267,6 +1325,91 @@ fun DefaultRemoteScreen(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun TrashDropTarget(
+    active: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val color = if (active) Color(0xFFFF6666) else Color.White.copy(alpha = 0.88f)
+    val backgroundColor = if (active) {
+        Color(0xFF5A1010).copy(alpha = 0.82f)
+    } else {
+        Color.Black.copy(alpha = 0.62f)
+    }
+
+    Box(
+        modifier = modifier
+            .background(backgroundColor, shape = CircleShape)
+            .border(
+                width = if (active) 3.dp else 1.dp,
+                color = color,
+                shape = CircleShape,
+            )
+            .padding(16.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val strokeWidth = 3.dp.toPx()
+            val lidY = size.height * 0.24f
+            val bodyTop = size.height * 0.34f
+            val bodyBottom = size.height * 0.82f
+            val bodyLeft = size.width * 0.26f
+            val bodyRight = size.width * 0.74f
+            val handleLeft = size.width * 0.42f
+            val handleRight = size.width * 0.58f
+            val handleY = size.height * 0.16f
+
+            drawLine(
+                color = color,
+                start = Offset(size.width * 0.20f, lidY),
+                end = Offset(size.width * 0.80f, lidY),
+                strokeWidth = strokeWidth,
+            )
+            drawLine(
+                color = color,
+                start = Offset(handleLeft, lidY),
+                end = Offset(handleLeft, handleY),
+                strokeWidth = strokeWidth,
+            )
+            drawLine(
+                color = color,
+                start = Offset(handleLeft, handleY),
+                end = Offset(handleRight, handleY),
+                strokeWidth = strokeWidth,
+            )
+            drawLine(
+                color = color,
+                start = Offset(handleRight, handleY),
+                end = Offset(handleRight, lidY),
+                strokeWidth = strokeWidth,
+            )
+            drawPath(
+                path = Path().apply {
+                    moveTo(bodyLeft, bodyTop)
+                    lineTo(bodyRight, bodyTop)
+                    lineTo(size.width * 0.68f, bodyBottom)
+                    lineTo(size.width * 0.32f, bodyBottom)
+                    close()
+                },
+                color = color,
+                style = Stroke(width = strokeWidth),
+            )
+            drawLine(
+                color = color,
+                start = Offset(size.width * 0.42f, bodyTop + strokeWidth),
+                end = Offset(size.width * 0.42f, bodyBottom - strokeWidth),
+                strokeWidth = strokeWidth,
+            )
+            drawLine(
+                color = color,
+                start = Offset(size.width * 0.58f, bodyTop + strokeWidth),
+                end = Offset(size.width * 0.58f, bodyBottom - strokeWidth),
+                strokeWidth = strokeWidth,
+            )
         }
     }
 }
